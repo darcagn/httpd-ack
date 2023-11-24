@@ -1,5 +1,5 @@
 # Put the filename of the output binary here
-VERSION = "20071123"
+VERSION = "20080711"
 TARGET = httpd-ack.elf
 
 # List all of your C files here, but change the extension to ".o"
@@ -17,7 +17,7 @@ all: rm-elf $(TARGET)
 include $(KOS_BASE)/Makefile.rules
 
 clean:
-	rm -f $(TARGET) $(OBJS) romdisk.img release/*.zip romdisk/*.zip cdrom/*
+	rm -f $(TARGET) $(OBJS) romdisk.img release/*.zip romdisk/*.zip cdrom/* source/*.zip
  
 rm-elf:
 	rm -f $(TARGET) romdisk.*
@@ -27,7 +27,7 @@ $(TARGET): $(OBJS)
 		$(OBJS) $(OBJEXTRA) -llwip4 -lkosutils -lconio $(KOS_LIBS)
 
 romdisk.img:
-	zip -9 -r romdisk/source.zip source/
+	zip -9 -r romdisk/httpd-ack-source-$(VERSION).zip source/
 	$(KOS_GENROMFS) -f romdisk.img -d romdisk -v
 
 romdisk.o: romdisk.img
@@ -43,7 +43,7 @@ release: $(TARGET)
 
 # boot cd related stuff
 # misc utils for making boot cd
-CDRECORD = cdrecord speed=4 dev= ATAPI:0,0,0
+CDRECORD = cdrecord speed=4
 SCRAMBLE = util/scramble
 MAKEIP = util/makeip
 MAKEIP_TMPL = util/IP.TMPL
@@ -75,4 +75,5 @@ cdrom/data.raw: cdrom/tmp.iso cdrom/IP.BIN
 
 burn-cd: cdrom/data.raw
 	$(CDRECORD) -xa cdrom/data.raw
+	eject
 	rm -f cdrom/burn-audio cdrom/data.raw cdrom/tmp.iso	

@@ -1,3 +1,7 @@
+v20080711
+  + make the source code link on index.html page
+  + auto spin down cdrom once loaded
+
 v20071123
   + update disc.gdi format for newer nulldc (s/-8/0/)
   + add ability to use TOC from ip.bin for session 2

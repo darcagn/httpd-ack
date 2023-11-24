@@ -540,7 +540,8 @@ void send_toc(http_state_t *hs, int ipbintoc) {
 
 send_toc_out:
 
-  sprintf(cursor, "</table><hr>httpd-ack v%s server</body></html>", VERSION);
+  sprintf(cursor, "</table><hr>httpd-ack <a href=\"httpd-ack-source-%s.zip\">v%s</a> server</body></html>",
+          VERSION, VERSION);
   cursor += strlen(cursor);
 
   output_size = strlen(output);
@@ -724,8 +725,8 @@ void client_thread(void *p) {
       send_error(hs, 404, "ERROR: track dump refused, cdrom is locked by another thread");
     }
 
-  } else if(strcmp(buf, "/source.zip") == 0) {
-    send_fsfile(hs, "/rd/source.zip");
+  } else if(strcmp(buf, "/httpd-ack-source-" VERSION ".zip") == 0) {
+    send_fsfile(hs, "/rd/httpd-ack-source-" VERSION ".zip");
 
   } else if(sscanf(buf, "/memory_start%lu_end%lu.bin", &memory_start, &memory_end) == 2) {
     send_memory(hs, memory_start, memory_end);
@@ -779,7 +780,7 @@ void client_thread(void *p) {
       send_error(hs, 404, "TOC list refused, cdrom locked by another thread");
     }
   } else {
-      send_error(hs, 404, "File not found.");
+    send_error(hs, 404, "File not found.");
   }
 
 client_thread_out:
@@ -863,6 +864,9 @@ int main(int argc, char **argv) {
 
   // init cdrom with default options
   cdrom_init(-1,-1,-1);
+
+  // auto spin down cdrom once we are loaded
+  cdrom_spin_down();
 
   pvr_init_defaults();
   conio_init(CONIO_TTY_PVR, CONIO_INPUT_LINE);
