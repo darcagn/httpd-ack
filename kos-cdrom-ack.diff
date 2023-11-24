@@ -27,7 +27,20 @@ Index: kernel/arch/dreamcast/include/dc/cdrom.h
  /* Command responses */
  #define ERR_OK		0
  #define ERR_NO_DISC	1
-@@ -78,13 +82,13 @@
+@@ -58,6 +62,12 @@
+ #define CD_CDI		0x30
+ #define CD_GDROM	0x80
+ 
++/* sub channel formats */
++#define CD_SUB_Q_CHANNEL        0
++#define CD_SUB_CURRENT_POSITION 1
++#define CD_SUB_MEDIA_CATALOG    2
++#define CD_SUB_TRACK_ISRC       3
++
+ /* TOC structure returned by the BIOS */
+ typedef struct {
+ 	uint32	entry[99];
+@@ -78,14 +88,20 @@
  int cdrom_get_status(int *status, int *disc_type);
  
  /* Re-init the drive, e.g., after a disc change, etc */
@@ -41,9 +54,16 @@ Index: kernel/arch/dreamcast/include/dc/cdrom.h
 -int cdrom_read_sectors(void *buffer, int sector, int cnt);
 +int cdrom_read_sectors(int type, void *buffer, int sector, int cnt);
  
++/* Get subchannel data from last read sector */
++int cdrom_get_subchannel(int format, void *buffer, int buflen);
++
++/* Set data type of cdrom sector reads */
++int cdrom_set_datatype(int param1, int cdxa, int sector_size);
++
  /* Locate the LBA sector of the data track */
  uint32 cdrom_locate_data_track(CDROM_TOC *toc);
-@@ -102,7 +106,7 @@
+ 
+@@ -102,7 +118,7 @@
  int cdrom_spin_down();
  
  /* Initialize */
@@ -104,6 +124,10 @@ Index: kernel/arch/dreamcast/hardware/cdrom.c
  	/* Check disc type and set parameters */
  	gdc_get_drv_stat(params);
 -	cdxa = params[1] == 32;
+-	params[0] = 0;				/* 0 = set, 1 = get */
+-	params[1] = 8192;			/* ? */
+-	params[2] = cdxa ? 2048 : 1024;		/* CD-XA mode 1/2 */
+-	params[3] = 2048;			/* sector size */
 +	if(cdxa == -1) 
 +		cdxa = (params[1] == 32 ? 2048 : 1024);
 +	if(param1 == -1)
@@ -111,10 +135,7 @@ Index: kernel/arch/dreamcast/hardware/cdrom.c
 +	if(sector_size == -1)
 +		sector_size = 2048;
 +
- 	params[0] = 0;				/* 0 = set, 1 = get */
--	params[1] = 8192;			/* ? */
--	params[2] = cdxa ? 2048 : 1024;		/* CD-XA mode 1/2 */
--	params[3] = 2048;			/* sector size */
++	params[0] = 0; 				/* 0 = set, 1 = get */
 +	params[1] = param1;			/* ? */
 +	params[2] = cdxa;			/* CD-XA mode 1/2 */
 +	params[3] = sector_size;			/* sector size */
@@ -130,21 +151,60 @@ Index: kernel/arch/dreamcast/hardware/cdrom.c
  	struct {
  		int	sec, num;
  		void	*buffer;
-@@ -204,8 +210,11 @@
+@@ -204,12 +210,51 @@
  	params.num = cnt;	/* Number of sectors */
  	params.buffer = buffer;	/* Output buffer */
  	params.dunno = 0;	/* ? */
 -	rv = cdrom_exec_cmd(CMD_PIOREAD, &params);
--	
 +	if(type == READ_PIO) {
 +		rv = cdrom_exec_cmd(CMD_PIOREAD, &params);
 +	} else {
 +		rv = cdrom_exec_cmd(CMD_DMAREAD, &params);
 +	}		
++	mutex_unlock(mutex);
++	return rv;
++}
++
++int cdrom_get_subchannel(int format, void *buffer, int buflen) {
++	struct {
++		int	format;
++		int	buflen;
++		void	*buffer;
++	} params;
++	int rv;
++
++	mutex_lock(mutex);
+ 	
++	params.format = format;
++	params.buflen = buflen;
++	params.buffer = buffer;
++
++	rv = cdrom_exec_cmd(CMD_GETSCD, &params);
  	mutex_unlock(mutex);
  	return rv;
  }
-@@ -295,7 +304,7 @@
+ 
++int cdrom_set_datatype(int param1, int cdxa, int sector_size) {
++	uint32 params[4];
++	int rv = ERR_OK;
++
++	mutex_lock(mutex);
++	params[0] = 0; 				/* 0 = set, 1 = get */
++	params[1] = param1;			/* ? */
++	params[2] = cdxa;			/* CD-XA mode 1/2 */
++	params[3] = sector_size;		/* sector size */
++
++	if(gdc_change_data_type(params) < 0)
++          rv = ERR_SYS;
++
++	mutex_unlock(mutex);
++	return rv;
++}
++
+ /* Locate the LBA sector of the data track; use after reading TOC */
+ uint32 cdrom_locate_data_track(CDROM_TOC *toc) {
+ 	int i, first, last;
+@@ -295,7 +340,7 @@
  }
  
  /* Initialize: assume no threading issues */
@@ -153,7 +213,7 @@ Index: kernel/arch/dreamcast/hardware/cdrom.c
  	uint32 p, x;
  	volatile uint32 *react = (uint32*)0xa05f74e4,
  		*bios = (uint32*)0xa0000000;
-@@ -315,7 +324,7 @@
+@@ -315,7 +360,7 @@
  	mutex = mutex_create();
  
  	/* Do an initial initialization */

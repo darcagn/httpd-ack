@@ -15,6 +15,10 @@ mutex_t *cdrom_mutex;
 #define TRACK_AUDIO 0
 #define TRACK_DATA  4
 
+#define SUB_NONE         0
+#define SUB_SYSCALL      1
+#define SUB_READ_SECTOR  2
+
 typedef struct http_state {
   int                      socket;
   struct sockaddr_in       client;
@@ -185,17 +189,19 @@ send_fsfile_out:
 #define SECTOR_BUFFER        (2352*(MAX_SECTOR_READ + 1))
 #define MMAP_NOCACHE         0x20000000
 void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
-                int sector_size, int gap, int dma, int sector_read, int retry) {
+                int sector_size, int gap, int dma, int sector_read, 
+                int sub, int abort, int retry) {
   char *buf, *nocache;
-  int track_start, track_end, track_size;
+  int sector_start, sector_end, track_size;
   int sector;
   CDROM_TOC toc;
   int attempt, rv;
   int offset, data_size;
   buf = nocache = NULL;
 
-  printscr("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d retry:%d",
-           session, track, p1, cdxa, sector_size, dma, sector_read, retry);
+  printscr("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d sub:%d retry:%d ab:%d",
+           session, track, p1, cdxa, sector_size, dma, sector_read, 
+           sub, retry, abort);
 
   if(sector_size <= 0) {
     printscr("WARN: invalid sector_size %d, forcing 2352", sector_size);
@@ -217,6 +223,22 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     sector_read = 1;
   }
 
+  if(sub < 0 || sub > 2) {
+    printscr("WARN: invalid sub %d, forcing %d", sub, SUB_NONE);
+    sub = SUB_NONE;
+  }
+
+  if(sub) {
+    if(sector_read != 1) {
+      printscr("WARN: sub enabled, sector_read forced to 1");
+      sector_read = 1;
+    }
+    if(dma != 0) {
+      printscr("WARN: sub enabled, dma read disabled");
+      dma = 0;
+    }
+  }
+
   if(retry < 0) {
     printscr("WARN: retry %d < 0, forcing 0", retry);
     retry = 0;
@@ -227,24 +249,35 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     goto send_track_out;
   }
 
-  if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
-    send_error(hs, 404, "ERROR: toc read failed");
-    goto send_track_out;
-  }
+  // allow session/track to act as sector start/end
+  if(session >= 100 && track >= 100 && track >= session) {
+    sector_start = session;
+    sector_end = track + 1;
 
-  if(track < TOC_TRACK(toc.first) || track > TOC_TRACK(toc.last)) {
-    send_error(hs, 404, "ERROR: invalid track for session");
-    goto send_track_out;
-  }
-
-  track_start = TOC_LBA(toc.entry[track-1]);
-  if(track == TOC_TRACK(toc.last)) {
-    track_end = TOC_LBA(toc.leadout_sector) - gap;
+  // determine the start/end sector from toc
   } else {
-    track_end = TOC_LBA(toc.entry[track]) - gap;
+    if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
+      send_error(hs, 404, "ERROR: toc read failed");
+      goto send_track_out;
+    }
+
+    if(track < TOC_TRACK(toc.first) || track > TOC_TRACK(toc.last)) {
+      send_error(hs, 404, "ERROR: invalid track for session");
+      goto send_track_out;
+    }
+
+    sector_start = TOC_LBA(toc.entry[track-1]);
+    if(track == TOC_TRACK(toc.last)) {
+      sector_end = TOC_LBA(toc.leadout_sector) - gap;
+    } else {
+      sector_end = TOC_LBA(toc.entry[track]) - gap;
+    }
   }
 
-  track_size = sector_size * (track_end - track_start);
+  track_size = sector_size * (sector_end - sector_start);
+  if(sub) {
+    track_size += 96 * (sector_end - sector_start);
+  }
 
   buf = memalign(32, SECTOR_BUFFER);
   if(buf == NULL) {
@@ -258,8 +291,13 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
   // which disables caching to avoid any issues with dma transfers
   nocache = (void*)((mem_ptr_t) buf | MMAP_NOCACHE);
 
+  sector = sector_start;
   send_ok(hs, "application/octet-stream", track_size);
-  for(sector = track_start; sector + sector_read < track_end; sector += sector_read) {
+  do {
+
+    if(sector_end - sector < sector_read) {
+      sector_read = sector_end - sector;
+    }
 
     // poison the entire malloc
     memset(nocache, 'Q', SECTOR_BUFFER);
@@ -268,8 +306,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     do {
 
       if(attempt != 0) 
-        printscr("READ ERROR: t:%d sector: %d, retrying", 
-                 track, sector);
+        printscr("READ ERROR: sector: %d, retrying", sector);
 
       rv = cdrom_read_sectors(dma, nocache, sector, sector_read);
       attempt++;
@@ -277,12 +314,55 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     } while(rv != ERR_OK && attempt < retry);
 
     if(rv != ERR_OK) {
-      printscr("READ ERROR: t:%d sector: %d, FAILED: aborting transfer",
-               track, sector);
-      goto send_track_out;
+        printscr("READ ERROR: sector: %d, FAILED", sector);
+        if(abort)
+          goto send_track_out;
     }
     
-    data_size = sector_size * sector_read;
+    data_size = (sector_size * sector_read);
+
+    // syscall method of getting sub channel data
+    if(sub == SUB_SYSCALL) {
+
+      rv = cdrom_get_subchannel(CD_SUB_Q_CHANNEL, nocache+sector_size, 100);
+      if(rv != ERR_OK) {
+        printscr("SUB ERROR: sector: %d, FAILED", sector);
+        if(abort)
+          goto send_track_out;
+      }
+      // shift over 4 bytes to get rid of unneeded header
+      memcpy(nocache+sector_size, nocache+sector_size+4, 96);
+      data_size += 96;
+
+    // cdrom_read_sectors method of getting sub channel data
+    } else if(sub == SUB_READ_SECTOR) {
+
+      if(cdrom_set_datatype(16, cdxa, sector_size) != ERR_OK) {
+        printscr("SUB ERROR: failed to set datatype (p=16)");
+        if(abort)
+          goto send_track_out;
+      }
+
+      rv = cdrom_read_sectors(dma, nocache+sector_size, sector, sector_read);
+      if(rv != ERR_OK) {
+        printscr("SUB ERROR: sector: %d, FAILED", sector);
+        if(abort)
+          goto send_track_out;
+      }
+
+      // shift over 4 bytes to get rid of unneeded header
+      memcpy(nocache+sector_size, nocache+sector_size+4, 96);
+      data_size += 96;
+      
+      // reset the read datatype
+      if(cdrom_set_datatype(p1, cdxa, sector_size) != ERR_OK) {
+        printscr("SUB ERROR: failed to reset datatype (p=%d)", p1);
+        if(abort)
+          goto send_track_out;
+      }
+
+    }
+
     offset = 0;
     while(data_size > 0) {
       rv = write(hs->socket, nocache+offset, data_size);
@@ -292,43 +372,9 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
       data_size -= rv;
       offset += rv;
     }
-  }
 
-  // send the lask chuck of data
-  if(sector < track_end) {
-
-    // poison the entire malloc
-    memset(nocache, 'Q', SECTOR_BUFFER);
-    attempt = 0;
-
-    do {
-
-      if(attempt != 0) 
-        printscr("READ ERROR: t:%d sector: %d, retrying", 
-                 track, sector);
-
-      rv = cdrom_read_sectors(dma, nocache, sector, track_end - sector);
-      attempt++;
-
-    } while(rv != ERR_OK && attempt < retry);
-
-    if(rv != ERR_OK) {
-      printscr("READ ERROR: t:%d sector: %d, FAILED: aborting transfer",
-               track, sector);
-      goto send_track_out;
-    }
-
-    data_size = sector_size * (track_end - sector);
-    offset = 0;
-    while(data_size > 0) {
-      rv = write(hs->socket, nocache+offset, data_size);
-      if(rv <= 0)
-        goto send_track_out;
-
-      data_size -= rv;
-      offset += rv;
-    }
-  }
+    sector += sector_read;
+  } while(sector < sector_end);
 
 send_track_out:
 
@@ -449,15 +495,14 @@ void send_toc(http_state_t *hs) {
         }
       }
 
-
       sector_size = 2352;
       track_size = sector_size * (track_end - track_start + 1);
 
       // href part
-      sprintf(cursor, "<tr><td><a href=\"track%02d.%s?session%02d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d\">",
+      sprintf(cursor, "<tr><td><a href=\"track%02d.%s?session%02d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d\">",
               track, 
               (track_type == TRACK_DATA ? "bin" : "raw"),
-              session + 1, 4096, 0, 2352, gap, 1, 16, 5);
+              session + 1, 4096, 0, 2352, gap, 1, 16, 0, 1, 5);
       cursor += strlen(cursor);
 
       // rendered part
@@ -507,7 +552,7 @@ send_toc_out:
 }
 
 // send gdi file used by nullDC
-#define GDI_BUFFER	2048
+#define GDI_BUFFER	4096
 void send_gdi(http_state_t *hs) {
   CDROM_TOC toc1, toc2;
   char *output, *cursor;
@@ -639,7 +684,8 @@ int read_headers(http_state_t *hs, char *buffer, int bufsize) {
 void client_thread(void *p) {
   http_state_t * hs = (http_state_t *)p;
   char *buf = NULL;
-  int session, track, p1, cdxa, sector_size, gap, dma, sector_read, retry;
+  int session, track, p1, cdxa, sector_size, gap, dma, sector_read, sub;
+  int abort, retry;
   unsigned long memory_start, memory_end;
 
   printscr("httpd: client thread started, socket %d", hs->socket);
@@ -658,16 +704,16 @@ void client_thread(void *p) {
   printscr("httpd: client request '%s', socket %d", buf, hs->socket);
 
   // deal with request
-  if((sscanf(buf, "/track%d.bin?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d",
+  if((sscanf(buf, "/track%d.bin?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
            &track, &session, &p1, &cdxa, &sector_size, &gap, &dma, 
-           &sector_read, &retry) == 9) ||
-     (sscanf(buf, "/track%d.raw?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d",
+           &sector_read, &sub, &abort, &retry) == 11) ||
+     (sscanf(buf, "/track%d.raw?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
            &track, &session, &p1, &cdxa, &sector_size, &gap, &dma, 
-           &sector_read, &retry) == 9)) {
+           &sector_read, &sub, &abort, &retry) == 11)) {
 
     if(mutex_trylock(cdrom_mutex) == 0) {
       send_track(hs, session, track, p1, cdxa, sector_size, gap, dma, 
-                 sector_read, retry);
+                 sector_read, sub, abort, retry);
       mutex_unlock(cdrom_mutex);
     } else {
       send_error(hs, 404, "ERROR: track dump refused, cdrom is locked by another thread");

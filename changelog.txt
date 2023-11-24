@@ -1,3 +1,11 @@
+v20070624
+  + gave session/track dual meaning on url.  If both are >= 150, session 
+    will act as the start sector, and track the end sector when dumping.
+  + fixed overflow when sending gdi file on discs with 60+ track,
+    bug report by Nologic
+  + add abort option url, default on
+  + merged in sub channel dump code, default off
+
 v20070511
   + fix some spelling errors on web interface pointed out by maddog
   + adjust default dump settings per tosec/dumpcast agreement
