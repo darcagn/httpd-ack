@@ -19,12 +19,14 @@ Changing track dump options
 ------------
 If you hover of the link for a track it will look something like
 
-http://IP/track03.iso?session02_p8192_cdxa1024_sector_size2352_gap0_dma1_sector_read16_sub0_abort1_retry5.iso
+http://IP/track03.iso?ipbintoc0_session02_p8192_cdxa1024_sector_size2352_gap0_dma1_sector_read16_sub0_abort1_retry5.iso
 
 Each of these can be adjusted to change how the track is dumped
 
 track%d       = dump track %d (or end sector if >= 100) 
 session%d     = dump session %d (or start sector if >= 100)
+ipbintoc%s    = 1 use cdrom TOC thats in IP.BIN for session 2
+                0 use cdrom's TOC
 p%d           = unknown param when initializing the cdrom. 8192 and 4096 
                 seem to be valid numbers.  8192 for data, 4096 for audio?
 cdxa%d        = something to do with cdxa.  0, 1024, 2048 seem to be 
@@ -52,12 +54,27 @@ Example:
 
 Changing the original url to be
 
-http://IP/track03.iso?session02_p4096_cdxa0_sector_size2352_gap150_dma0_sector_read1_sub0_abort0_retry0.iso
+http://IP/track03.iso?ipbintoc0_session02_p4096_cdxa0_sector_size2352_gap150_dma0_sector_read1_sub0_abort0_retry0.iso
 
 will cause it to dump the same track with 2352 sector size, using PIO 
 cdrom reading, reading 1 sector at a time, stopping 150 sectors before 
 the start of the next track, no retrys on read error, and continue if an 
 error.
+
+ip.bin TOC
+----------------
+Its possible to make httpd-ack use the TOC from the ip.bin at sector 
+45000 for session 2.  The ability to do this is to assist in making it 
+possible to dump GD-R media using a swap disc method.
+
+http://IP/?ipbintoc
+or
+http://IP/index.html?ipbintoc
+
+The following entry will be logged to the video output to indicate it 
+is using the ip.bin for the TOC.
+
+get_toc(): using ip.bin for TOC
 
 memory poisoning
 ----------------
@@ -71,7 +88,7 @@ only filling 2048 worth of data for each sector
 dumping specific sector range
 --------------
 track%d and sector%d have a dual meaning which will allow dumping a 
-specific range of sectors.  If both are >= 100, the value of sector%d 
+specific range of sectors.  If both are >= 100, the value of session%d 
 will act as the start sector, and track%d the end sector.
 
 dump bios/flash

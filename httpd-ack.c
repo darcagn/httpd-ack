@@ -45,6 +45,46 @@ cdrom_info_t cdrom_info[] = {
   { "Manufacturer ID",   0x70, 0x7F },
 };
 
+// get the cdrom toc, its upto the caller to reinit the cdrom
+#define IPBIN_TOC_OFFSET 0xFC
+int get_toc(CDROM_TOC *toc, int session, int ipbintoc) {
+
+  memset(toc, 0x0, sizeof(CDROM_TOC));
+  char ipbin[2352];
+
+  // use the TOC thats in the ip.bin instead of what the cdrom tells us
+  if(session == 1 && ipbintoc) {
+    if(cdrom_reinit(-1,-1,-1) != ERR_OK) {
+      conio_printf("get_toc(): failed to reinit cdrom\n");
+      return ERR_SYS;
+    }
+  
+    // read in ip.bin
+    if(cdrom_read_sectors(READ_PIO, ipbin, 45150, 1) != ERR_OK) {
+      conio_printf("get_toc(): failed to read ip.bin\n");
+      return ERR_SYS;
+    }
+
+    // verify it looks like a dreamcast disc
+    if(strncasecmp("SEGA SEGAKATANA", ipbin, strlen("SEGA SEGAKATANA")) != 0) {
+      conio_printf("get_toc(): invalid ip.bin\n");
+      return ERR_SYS;
+    }
+       
+    conio_printf("get_toc(): using ip.bin for TOC\n");
+    memcpy(toc,ipbin+IPBIN_TOC_OFFSET,sizeof(CDROM_TOC));
+    return ERR_OK;
+  } 
+
+  if(cdrom_read_toc(toc, session) != ERR_OK) {
+    conio_printf("get_toc(): cdrom_read_toc failed for session: %d\n", 
+                 session);
+    return ERR_SYS;
+  }
+  return ERR_OK;
+}
+
+
 // send http response, if len > 0 include length header
 void send_ok(http_state_t *hs, const char *ct, int len) {
   char buf[512];
@@ -151,7 +191,7 @@ send_fsfile_out:
 #define MAX_SECTOR_READ      128
 #define SECTOR_BUFFER        (2352*(MAX_SECTOR_READ + 1))
 #define MMAP_NOCACHE         0x20000000
-void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
+void send_track(http_state_t *hs, int ipbintoc, int session, int track, int p1, int cdxa,
                 int sector_size, int gap, int dma, int sector_read, 
                 int sub, int abort, int retry) {
   char *buf, *nocache;
@@ -162,8 +202,8 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
   int offset, data_size;
   buf = nocache = NULL;
 
-  conio_printf("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d sub:%d retry:%d ab:%d\n",
-           session, track, p1, cdxa, sector_size, dma, sector_read, 
+  conio_printf("s:%d toc:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d sub:%d retry:%d ab:%d\n",
+           ipbintoc, session, track, p1, cdxa, sector_size, dma, sector_read, 
            sub, retry, abort);
 
   if(sector_size <= 0) {
@@ -207,11 +247,6 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     retry = 0;
   }
 
-  if(cdrom_reinit(p1, cdxa, sector_size) != ERR_OK) {
-    send_error(hs, 404, "ERROR: cdrom_reinit() failed");
-    goto send_track_out;
-  }
-
   // allow session/track to act as sector start/end
   if(session >= 100 && track >= 100 && track >= session) {
     sector_start = session;
@@ -219,7 +254,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
 
   // determine the start/end sector from toc
   } else {
-    if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
+    if(get_toc(&toc, session - 1, ipbintoc) != ERR_OK) {
       send_error(hs, 404, "ERROR: toc read failed");
       goto send_track_out;
     }
@@ -235,6 +270,11 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     } else {
       sector_end = TOC_LBA(toc.entry[track]) - gap;
     }
+  }
+
+  if(cdrom_reinit(p1, cdxa, sector_size) != ERR_OK) {
+    send_error(hs, 404, "ERROR: cdrom_reinit() failed");
+    goto send_track_out;
   }
 
   track_size = sector_size * (sector_end - sector_start);
@@ -377,7 +417,7 @@ void trim_cdrom_info(char *input, char *output, int size) {
 
 // send cdrom toc
 #define TOC_BUFFER 32768
-void send_toc(http_state_t *hs) {
+void send_toc(http_state_t *hs, int ipbintoc) {
   char *output, *cursor;
   char sector[2352], info[129];
   int output_size, i, rv;
@@ -421,7 +461,10 @@ void send_toc(http_state_t *hs) {
         sprintf(cursor, "<tr><td>%s</td><td colspan=3>%s</td></tr>\n",cdrom_info[i].name, info);
         cursor += strlen(cursor);
       }
-    } else {
+      sprintf(cursor, "<tr><td>TOC</td><td colspan=3>%s</td></tr>\n", (ipbintoc ? "IP.BIN" : "DISC"));
+      cursor += strlen(cursor);
+
+   } else {
       sprintf(cursor, "<tr><td colspan=4>WARN: Not Dreamcast disc, bad sig</td></td>\n");
       cursor += strlen(cursor);
     }
@@ -434,7 +477,7 @@ void send_toc(http_state_t *hs) {
   cursor += strlen(cursor);
 
   for(session = 0; session < 2; session++) {
-    if(cdrom_read_toc(&toc, session) != ERR_OK) {
+    if(get_toc(&toc, session, (session == 1 ? ipbintoc : 0)) != ERR_OK) {
       conio_printf("WARN: Failed to read toc, session %d\n", session + 1);
       continue;
     }
@@ -462,9 +505,10 @@ void send_toc(http_state_t *hs) {
       track_size = sector_size * (track_end - track_start + 1);
 
       // href part
-      sprintf(cursor, "<tr><td><a href=\"track%02d.%s?session%02d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d\">",
+      sprintf(cursor, "<tr><td><a href=\"track%02d.%s?ipbintoc%d_session%02d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d\">",
               track, 
               (track_type == TRACK_DATA ? "bin" : "raw"),
+              (session == 1 ? ipbintoc : 0),
               session + 1, 4096, 0, 2352, gap, 1, 16, 0, 1, 5);
       cursor += strlen(cursor);
 
@@ -489,7 +533,8 @@ void send_toc(http_state_t *hs) {
   cursor += strlen(cursor);
 
   if(sendgdi) {
-    sprintf(cursor, "<tr><td><a href=\"disc.gdi\">disc.gdi</a></td><td colspan=3>nullDC gdi file</td></tr>");
+    sprintf(cursor, "<tr><td><a href=\"disc.gdi%s\">disc.gdi</a></td><td colspan=3>nullDC gdi file</td></tr>",
+            (ipbintoc ? "?ipbintoc" : ""));
     cursor += strlen(cursor);
   }
 
@@ -516,22 +561,20 @@ send_toc_out:
 
 // send gdi file used by nullDC
 #define GDI_BUFFER	4096
-void send_gdi(http_state_t *hs) {
+void send_gdi(http_state_t *hs, int ipbintoc) {
   CDROM_TOC toc1, toc2;
   char *output, *cursor;
   int output_size, track, rv;
   
-  // add a cdrom_reinit?
-
   conio_printf("sending gdi file, socket %d\n", hs->socket);
 
-  if(cdrom_read_toc(&toc1, 0) != ERR_OK) {
+  if(get_toc(&toc1, 0, 0) != ERR_OK) {
     conio_printf("FATAL: Failed to read toc, session %d\n", 1);
     send_error(hs, 404, "No disc in drive? (error reading session 1 TOC)"); 
     return;
   }
 
-  if(cdrom_read_toc(&toc2, 1) != ERR_OK) {
+  if(get_toc(&toc2, 1, ipbintoc) != ERR_OK) {
     conio_printf("FATAL: Failed to read toc, session %d\n", 2);
     send_error(hs, 404, "Not a dreamcast disc (2nd session)"); 
     return;
@@ -560,7 +603,7 @@ void send_gdi(http_state_t *hs) {
             TOC_CTRL(toc1.entry[track-1]),
             2352, track,
             (TOC_CTRL(toc1.entry[track-1]) == TRACK_DATA ? "bin" : "raw"),
-            (TOC_CTRL(toc1.entry[track-1]) == TRACK_DATA ? -8 : 0));
+            0);
     cursor += strlen(cursor);
   }
 
@@ -571,7 +614,7 @@ void send_gdi(http_state_t *hs) {
             TOC_CTRL(toc2.entry[track-1]),
             2352, track,
             (TOC_CTRL(toc2.entry[track-1]) == TRACK_DATA ? "bin" : "raw"),
-            (TOC_CTRL(toc2.entry[track-1]) == TRACK_DATA ? -8 : 0));
+            0);
     cursor += strlen(cursor);
   }
 
@@ -647,8 +690,8 @@ int read_headers(http_state_t *hs, char *buffer, int bufsize) {
 void client_thread(void *p) {
   http_state_t * hs = (http_state_t *)p;
   char *buf = NULL;
-  int session, track, p1, cdxa, sector_size, gap, dma, sector_read, sub;
-  int abort, retry;
+  int ipbintoc, session, track, p1, cdxa, sector_size, gap, dma;
+  int sector_read, sub, abort, retry;
   unsigned long memory_start, memory_end;
 
   conio_printf("httpd: client thread started, socket %d\n", hs->socket);
@@ -666,33 +709,52 @@ void client_thread(void *p) {
   
   conio_printf("httpd: client request '%s', socket %d\n", buf, hs->socket);
 
-  // deal with request
-  if((sscanf(buf, "/track%d.bin?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
-           &track, &session, &p1, &cdxa, &sector_size, &gap, &dma, 
-           &sector_read, &sub, &abort, &retry) == 11) ||
-     (sscanf(buf, "/track%d.raw?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
-           &track, &session, &p1, &cdxa, &sector_size, &gap, &dma, 
-           &sector_read, &sub, &abort, &retry) == 11)) {
+  // deal with requests
+  if((sscanf(buf, "/track%d.bin?ipbintoc%d_session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
+           &track, &ipbintoc, &session, &p1, &cdxa, &sector_size, &gap, 
+           &dma, &sector_read, &sub, &abort, &retry) == 12) ||
+     (sscanf(buf, "/track%d.raw?ipbintoc%d_session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
+           &track, &ipbintoc, &session, &p1, &cdxa, &sector_size, &gap, 
+           &dma, &sector_read, &sub, &abort, &retry) == 12)) {
     if(mutex_trylock(cdrom_mutex) == 0) {
-      send_track(hs, session, track, p1, cdxa, sector_size, gap, dma, 
-                 sector_read, sub, abort, retry);
+      send_track(hs, ipbintoc, session, track, p1, cdxa, sector_size, 
+                 gap, dma, sector_read, sub, abort, retry);
       mutex_unlock(cdrom_mutex);
     } else {
       send_error(hs, 404, "ERROR: track dump refused, cdrom is locked by another thread");
     }
+
   } else if(strcmp(buf, "/source.zip") == 0) {
     send_fsfile(hs, "/rd/source.zip");
+
   } else if(sscanf(buf, "/memory_start%lu_end%lu.bin", &memory_start, &memory_end) == 2) {
     send_memory(hs, memory_start, memory_end);
+
   } else if(strcmp(buf, "/disc.gdi") == 0) {
-    // not going to lock, since TOC should be cache'd by cdrom/dc
-    send_gdi(hs);
+    if(mutex_trylock(cdrom_mutex) == 0) {
+      send_gdi(hs, 0);
+      mutex_unlock(cdrom_mutex);
+    } else {
+      send_error(hs, 404, "ERROR: disc.gdi refused, cdrom is locked by another thread");
+    }
+
+  } else if(strcmp(buf, "/disc.gdi?ipbintoc") == 0) {
+    if(mutex_trylock(cdrom_mutex) == 0) {
+      send_gdi(hs, 1);
+      mutex_unlock(cdrom_mutex);
+    } else {
+      send_error(hs, 404, "ERROR: disc.gdi refused, cdrom is locked by another thread");
+    }
+
   } else if(strcmp(buf, "/dc_bios.bin") == 0) {
     send_memory(hs, 0x0, 0x1FFFFF);
+
   } else if(strcmp(buf, "/dc_flash.bin") == 0) {
     send_memory(hs, 0x00200000, 0x0021FFFF);
+
   } else if(strcmp(buf, "/syscalls.bin") == 0) {
     send_memory(hs, 0x8C000000, 0x8C007FFF);
+
   } else if(strcmp(buf, "/cdrom_spin_down") == 0) {
     if(mutex_trylock(cdrom_mutex) == 0) {
       cdrom_spin_down();
@@ -700,15 +762,24 @@ void client_thread(void *p) {
     } else {
       send_error(hs, 404, "ERROR: cdrom spin down refusted, cdrom is locked by another thread");
     }
-  } else {
-    // need to lock since it cdrom_reinit and reads a sector for disc into
+  } else if(strcmp(buf, "/") == 0 || strcmp(buf, "/index.html") == 0) {
     if(mutex_trylock(cdrom_mutex) == 0) {
-      send_toc(hs);
+      send_toc(hs, 0);
       mutex_unlock(cdrom_mutex);
     } else {
       send_error(hs, 404, "TOC list refused, cdrom locked by another thread");
     }
 
+  } else if(strcmp(buf, "/?ipbintoc") == 0 ||
+            strcmp(buf, "/index.html?ipbintoc") == 0) {
+    if(mutex_trylock(cdrom_mutex) == 0) {
+      send_toc(hs, 1);
+      mutex_unlock(cdrom_mutex);
+    } else {
+      send_error(hs, 404, "TOC list refused, cdrom locked by another thread");
+    }
+  } else {
+      send_error(hs, 404, "File not found.");
   }
 
 client_thread_out:
@@ -716,13 +787,8 @@ client_thread_out:
   if(buf != NULL)
     free(buf);
 
-  // work around an issue within kos port of lwip
-  // tcp socket can be killed before all the data has been sent
-//  sleep(2);
-
   close(hs->socket);
   free(hs);
-
 }
 
 // main httpd thread

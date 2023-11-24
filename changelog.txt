@@ -1,3 +1,8 @@
+v20071123
+  + update disc.gdi format for newer nulldc (s/-8/0/)
+  + add ability to use TOC from ip.bin for session 2
+  + return 404 for unknown GET instead of cdrom contents
+
 v20070720
   + add some what nasty work around for kos/lwip killing off a socket
     before all data had been sent out.  this would also cause the tcp 
@@ -7,7 +12,7 @@ v20070720
   + fixed possible crash when reading ip.bin sector for meta data.
   + gave session/track dual meaning on url.  If both are >= 150, session 
     will act as the start sector, and track the end sector when dumping.
-  + fixed overflow when sending gdi file on discs with 60+ track,
+  + fixed overflow when sending gdi file on discs with 60+ tracks,
     bug report by Nologic
   + add abort option url, default on
   + merged in sub channel dump code, default off
