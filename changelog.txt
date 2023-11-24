@@ -1,4 +1,12 @@
-v200704xx
+v20070511
+  + fix some spelling errors on web interface pointed out by maddog
+  + adjust default dump settings per tosec/dumpcast agreement
+  + add syscalls dump /syscalls.bin, suggested by darcagn
+  + use built in memalign() instead of #define
+  + make sector buffer in P2 memory map region to disable caching, 
+    suggested by drkIIRaziel
+
+v20070430
   + remove the 2048/2352 sector size restriction
   + update Makefile to create boot discs
 

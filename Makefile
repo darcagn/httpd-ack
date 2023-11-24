@@ -1,5 +1,5 @@
 # Put the filename of the output binary here
-VERSION = "20070430"
+VERSION = "20070511"
 TARGET = httpd-ack.elf
 
 # List all of your C files here, but change the extension to ".o"
@@ -43,13 +43,14 @@ release: $(TARGET)
 
 # boot cd related stuff
 # misc utils for making boot cd
-CDRECORD = cdrecord speed=4 dev=/dev/cdrw
+CDRECORD = cdrecord speed=4 dev= ATAPI:0,0,0
 SCRAMBLE = util/scramble
 MAKEIP = util/makeip
 MAKEIP_TMPL = util/IP.TMPL
 
 
 cdrom/1ST_READ.BIN: $(TARGET)
+	kos-strip $(TARGET)
 	kos-objcopy -O binary -R .stack $(TARGET) cdrom/temp.bin
 	$(SCRAMBLE) cdrom/temp.bin cdrom/1ST_READ.BIN
 

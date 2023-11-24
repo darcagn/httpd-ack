@@ -23,7 +23,7 @@ typedef struct http_state {
 } http_state_t;
 
 typedef struct {
-  char name[32];
+  char name[24];
   int start;
   int end;
 } cdrom_info_t;
@@ -36,8 +36,8 @@ cdrom_info_t cdrom_info[] = {
   { "Peripheral String", 0x38, 0x3F },
   { "Product Number",    0x40, 0x49 },
   { "Version",           0x4A, 0x4F },
-  { "Release Data",      0x50, 0x5F },
-  { "Manufactur ID",     0x70, 0x7F },
+  { "Release Date",      0x50, 0x5F },
+  { "Manufacturer ID",   0x70, 0x7F },
 };
 
 // print junk to screen, overly inefficient
@@ -183,23 +183,23 @@ send_fsfile_out:
 // send cdrom track
 #define MAX_SECTOR_READ      128
 #define SECTOR_BUFFER        (2352*(MAX_SECTOR_READ + 1))
-#define MEM_DMA_ALIGN(addr)  ((void *)(((mem_ptr_t)(addr) + 32 - 1) & ~(mem_ptr_t)(32 - 1)))    
+#define MMAP_NOCACHE         0x20000000
 void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
                 int sector_size, int gap, int dma, int sector_read, int retry) {
-  char *buf, *bufalign;
+  char *buf, *nocache;
   int track_start, track_end, track_size;
   int sector;
   CDROM_TOC toc;
   int attempt, rv;
   int offset, data_size;
-  buf = bufalign = NULL;
+  buf = nocache = NULL;
 
   printscr("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d retry:%d",
            session, track, p1, cdxa, sector_size, dma, sector_read, retry);
 
   if(sector_size <= 0) {
-    printscr("WARN: invalid sector_size %d, forcing 2048", sector_size);
-    sector_size = 2048;
+    printscr("WARN: invalid sector_size %d, forcing 2352", sector_size);
+    sector_size = 2352;
   }
 
   if(dma != READ_PIO) {
@@ -246,21 +246,23 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
 
   track_size = sector_size * (track_end - track_start);
 
-  buf = malloc(SECTOR_BUFFER);
+  buf = memalign(32, SECTOR_BUFFER);
   if(buf == NULL) {
     send_error(hs, 404, "ERROR: malloc failure in send_track()");
     printscr("malloc failure in send_track(), socket %d", hs->socket);
     goto send_track_out;
   }
 
-  // align the memory to keep dma xfers from cdrom happy
-  bufalign = MEM_DMA_ALIGN(buf);
+  // malloc will return memory in the P1 memory map area (0x80000000-0x9FFFFFFF)
+  // MMAP_NOCACHE will bump it into P2 memory map area (0xA0000000-0xBFFFFFFF)
+  // which disables caching to avoid any issues with dma transfers
+  nocache = (void*)((mem_ptr_t) buf | MMAP_NOCACHE);
 
   send_ok(hs, "application/octet-stream", track_size);
   for(sector = track_start; sector + sector_read < track_end; sector += sector_read) {
 
     // poison the entire malloc
-    memset(buf, 'Q', SECTOR_BUFFER);
+    memset(nocache, 'Q', SECTOR_BUFFER);
     attempt = 0;
 
     do {
@@ -269,7 +271,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
         printscr("READ ERROR: t:%d sector: %d, retrying", 
                  track, sector);
 
-      rv = cdrom_read_sectors(dma, bufalign, sector, sector_read);
+      rv = cdrom_read_sectors(dma, nocache, sector, sector_read);
       attempt++;
 
     } while(rv != ERR_OK && attempt < retry);
@@ -283,7 +285,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     data_size = sector_size * sector_read;
     offset = 0;
     while(data_size > 0) {
-      rv = write(hs->socket, bufalign+offset, data_size);
+      rv = write(hs->socket, nocache+offset, data_size);
       if(rv <= 0)
         goto send_track_out;
 
@@ -294,8 +296,9 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
 
   // send the lask chuck of data
   if(sector < track_end) {
+
     // poison the entire malloc
-    memset(buf, 'Q', SECTOR_BUFFER);
+    memset(nocache, 'Q', SECTOR_BUFFER);
     attempt = 0;
 
     do {
@@ -304,7 +307,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
         printscr("READ ERROR: t:%d sector: %d, retrying", 
                  track, sector);
 
-      rv = cdrom_read_sectors(dma, bufalign, sector, track_end - sector);
+      rv = cdrom_read_sectors(dma, nocache, sector, track_end - sector);
       attempt++;
 
     } while(rv != ERR_OK && attempt < retry);
@@ -314,11 +317,11 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
                track, sector);
       goto send_track_out;
     }
-    
+
     data_size = sector_size * (track_end - sector);
     offset = 0;
     while(data_size > 0) {
-      rv = write(hs->socket, bufalign+offset, data_size);
+      rv = write(hs->socket, nocache+offset, data_size);
       if(rv <= 0)
         goto send_track_out;
 
@@ -372,7 +375,7 @@ void send_toc(http_state_t *hs) {
   int sendgdi = 0;
   CDROM_TOC toc;
   int session, track, track_size, track_type, track_start, track_end;
-  int sector_size, usegap;
+  int sector_size, gap;
 
   printscr("sending TOC, socket %d", hs->socket);
 
@@ -431,7 +434,7 @@ void send_toc(http_state_t *hs) {
       track_type = TOC_CTRL(toc.entry[track-1]);
       track_start = TOC_LBA(toc.entry[track-1]);
  
-      usegap = 0;
+      gap = 0;
       if(track == TOC_TRACK(toc.last)) {
         track_end = TOC_LBA(toc.leadout_sector) - 1;
       } else {
@@ -439,36 +442,27 @@ void send_toc(http_state_t *hs) {
         // set 150 gap between tracks of different types
         if(track_type != TOC_CTRL(toc.entry[track])) {
           track_end = TOC_LBA(toc.entry[track]) - 1;
-          track_end -= 150;
-          usegap = 1;
+          gap = 150;
+          track_end -= gap;
         } else {
           track_end = TOC_LBA(toc.entry[track]) - 1;
         }
       }
 
 
-      sector_size = (track_type == TRACK_DATA ? 2048 : 2352);
+      sector_size = 2352;
       track_size = sector_size * (track_end - track_start + 1);
 
-/* disabled, add a bit of lag to toc list
-      printscr("ses: %d, trk: %d, %s, start: %d, end: %d", session + 1, track,
-               (track_type == TRACK_DATA ? "DATA" : "AUDIO"),
-               track_start, track_end);
-*/
       // href part
       sprintf(cursor, "<tr><td><a href=\"track%02d.%s?session%02d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d\">",
               track, 
-              (track_type == TRACK_DATA ? "iso" : "raw"),
-              session + 1, 
-              (track_type == TRACK_DATA ? 8192 : 4096),
-              (track_type == TRACK_DATA ? 1024 : 0),
-              (track_type == TRACK_DATA ? 2048 : 2352), 
-              (usegap ? 150 : 0), 1, 16, 5);
+              (track_type == TRACK_DATA ? "bin" : "raw"),
+              session + 1, 4096, 0, 2352, gap, 1, 16, 5);
       cursor += strlen(cursor);
 
       // rendered part
       sprintf(cursor, "track%02d.%s</a></td><td align=right>%d</td><td align=right>%d</td><td align=right>%d</td></tr>\n",
-              track, (track_type == TRACK_DATA ? "iso" : "raw"), 
+              track, (track_type == TRACK_DATA ? "bin" : "raw"), 
               track_start, track_end, track_size);
       cursor += strlen(cursor);
     }
@@ -481,6 +475,9 @@ void send_toc(http_state_t *hs) {
   cursor += strlen(cursor);
 
   sprintf(cursor, "<tr><td><a href=\"dc_flash.bin\">dc_flash.bin</a></td><td colspan=3>Dreamcast Flash (0x00200000 - 0x0021FFFF)</td></tr>");
+  cursor += strlen(cursor);
+
+  sprintf(cursor, "<tr><td><a href=\"syscalls.bin\">syscalls.bin</a></td><td colspan=3>Dreamcast Syscalls (0x8C000000 - 0x8C007FFF)</td></tr>");
   cursor += strlen(cursor);
 
   if(sendgdi) {
@@ -550,21 +547,23 @@ void send_gdi(http_state_t *hs) {
 
   // session1
   for(track = TOC_TRACK(toc1.first); track <= TOC_TRACK(toc1.last); track++) {
-    sprintf(cursor, "%d %d %d %d track%02d.%s 0\r\n", track, 
+    sprintf(cursor, "%d %d %d %d track%02d.%s %d\r\n", track, 
             TOC_LBA(toc1.entry[track-1]) - 150, 
             TOC_CTRL(toc1.entry[track-1]),
-            (TOC_CTRL(toc1.entry[track-1]) == TRACK_DATA ? 2048 : 2352), track,
-            (TOC_CTRL(toc1.entry[track-1]) == TRACK_DATA ? "iso" : "raw"));
+            2352, track,
+            (TOC_CTRL(toc1.entry[track-1]) == TRACK_DATA ? "bin" : "raw"),
+            (TOC_CTRL(toc1.entry[track-1]) == TRACK_DATA ? -8 : 0));
     cursor += strlen(cursor);
   }
 
   // session2
   for(track = TOC_TRACK(toc2.first); track <= TOC_TRACK(toc2.last); track++) {
-    sprintf(cursor, "%d %d %d %d track%02d.%s 0\r\n", track, 
+    sprintf(cursor, "%d %d %d %d track%02d.%s %d\r\n", track, 
             TOC_LBA(toc2.entry[track-1]) - 150, 
             TOC_CTRL(toc2.entry[track-1]),
-            (TOC_CTRL(toc2.entry[track-1]) == TRACK_DATA ? 2048 : 2352), track,
-            (TOC_CTRL(toc2.entry[track-1]) == TRACK_DATA ? "iso" : "raw"));
+            2352, track,
+            (TOC_CTRL(toc2.entry[track-1]) == TRACK_DATA ? "bin" : "raw"),
+            (TOC_CTRL(toc2.entry[track-1]) == TRACK_DATA ? -8 : 0));
     cursor += strlen(cursor);
   }
 
@@ -659,7 +658,7 @@ void client_thread(void *p) {
   printscr("httpd: client request '%s', socket %d", buf, hs->socket);
 
   // deal with request
-  if((sscanf(buf, "/track%d.iso?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d",
+  if((sscanf(buf, "/track%d.bin?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d",
            &track, &session, &p1, &cdxa, &sector_size, &gap, &dma, 
            &sector_read, &retry) == 9) ||
      (sscanf(buf, "/track%d.raw?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_retry%d",
@@ -685,6 +684,8 @@ void client_thread(void *p) {
     send_memory(hs, 0x0, 0x1FFFFF);
   } else if(strcmp(buf, "/dc_flash.bin") == 0) {
     send_memory(hs, 0x00200000, 0x0021FFFF);
+  } else if(strcmp(buf, "/syscalls.bin") == 0) {
+    send_memory(hs, 0x8C000000, 0x8C007FFF);
   } else {
 
     // need to lock since it cdrom_reinit and reads a sector for disc into
