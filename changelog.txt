@@ -1,0 +1,57 @@
+v200704xx
+  + remove the 2048/2352 sector size restriction
+  + update Makefile to create boot discs
+
+v20070421
+  + fix an issue with reading the ip.bin data
+
+v20070415
+  + make the gdi more windows friendly by adding \r at eol
+  + use unsigned long on memory dump params
+
+v20070412
+  + add locking around send_toc/send_track
+  + forgot the -150 on session2 tracks in gdi file
+  + adjust url so track%.[iso|raw] will be the download file
+
+v20070411
+  + fix bug in memory dump that starts at 0x0
+  + add bios dump /dc_bios.bin
+  + add flash dump /dc_flash.bin
+  + add gdi file for current disc /disc.gdi
+  + adjust track urls so they download as session%d_track%d.(iso|raw)  
+
+v20070410
+  + only apply 150 gap to track if the next track is a different track 
+    type
+  + add memory dump /memory_start%d_end%d.bin
+
+v20070409
+  + add cdrom info output
+
+v20070408a
+  + fix retry bug
+  + add gap% option to url, default to 150 for all tracks except ones 
+    that end a session.  
+
+v20070408
+  + full rewrite
+  + clean up the web interface a bit
+  + add source code download
+  + fix overflow in tcp/ip stack
+  + work around realpath() crashes
+
+v20070407
+  + properly align memory for dma xfers
+  + fix tcp/ip stack corruption that was causing crashes
+  + misc fixes
+
+v20070405
+  + add ability to change dump options based on url
+  + patch kos to support initializing cdrom with different params
+  + patch kos to allow PIO or DMA cdrom sector reads
+  + logging to screen
+  + misc fixes
+
+v20070404
+  initial concept testing 

@@ -1,0 +1,100 @@
+httpd-ack - www.gotwalls.com - ackmed@gotwalls.com
+
+Usage
+=====
+dc-tool -t <dreamcast ip> -n -x httpd-ack.elf
+
+or
+
+use boot cdi image
+
+BBA IP address
+-----------
+Once httpd-ack.elf has been started on the dreamcast it will re-ip 
+itself to whatever "isp" setting are found in the dreamcast flash.  If 
+none are found it will not start the httpd.  google for 'bba passport' 
+for setting up "isp" settings if you dont have them.
+
+Changing track dump options
+------------
+If you hover of the link for a track it will look something like
+
+http://IP/track03.iso?session02_p8192_cdxa1024_sector_size2048_gap0_dma1_sector_read16_retry5.iso
+
+Each of these can be adjusted to change how the track is dumped
+
+track%d       = dump track %d
+session%d     = dump session %d
+p%d           = unknown param when initializing the cdrom. 8192 and 4096 
+                seem to be valid numbers.  8192 for data, 4096 for audio?
+cdxa%d        = something to do with cdxa.  0, 1024, 2048 seem to be 
+                valid numbers.  1024 for data, 0 for audio?
+sector_size%d = what sector size to initial the cdrom with for reading.    
+                2048 or 2352 are valid.  2352 doesnt always seem to 
+                stick and somehow depends on p and cdxa values.
+gap%d         = the end sector for tracks is unknown (except for the 
+                last track in a session).  so the end sector is 
+                calculated by ((start sector of next track - 1) - gap%d).
+dma%d         = 1 use dma when transfering from cdrom, 0 use pio.
+sector_read%d = number of sectors to read in each cdrom_read_sectors() 
+                call, max 128
+retry%d       = if cdrom_read_sectors() call returns an error, the 
+                number of times to retry before giving up
+
+Example:
+
+Changing the original url to be
+
+http://IP/track03.iso?session02_p4096_cdxa0_sector_size2352_gap150_dma0_sector_read1_retry0.iso
+
+will cause it to dump the same track with 2352 sector size, using PIO 
+cdrom reading, reading 1 sector at a time, stopping 150 sectors before 
+the start of the next track, and no retrys on read error.
+
+memory poisoning
+----------------
+The data buffer passed to cdrom_read_sectors() is poisoned with 'Q'.  If 
+the function doesnt properly fill the entire buffer size, a bunch of 
+QQQQQ's will show up in your downloaded track.
+
+This can happen if you request 2352 size sectors and the function is 
+only filling 2048 worth of data for each sector
+
+dump bios/flash
+--------------
+http://IP/dc_bios.bin - dreamcast bios, dump of memory 0x0 to 0x1fffff
+http://IP/dc_flash.bin - dreamcast flash, dump of memory 0x200000 - 0x21ffff
+
+nullDC gdi file
+---------------
+http://IP/disc.gdi - sends gdi file for the current disc for use with 
+nullDC emulator.
+
+dump memory region
+---------------
+http://IP/memory_start%d_end%d.bin - dump memory from start%d to end%d.
+
+httpd-ack source
+---------------
+The sounce code for httpd-ack is built into httpd-ack.elf file.  It can 
+be downloaded by going to http://IP/source.zip
+
+httpd related code in httpd-ack is based off of the example dreamcast 
+httpd code in kos by Dan Potter.  All other code in httpd-ack.c can be 
+considered under the same bsd license as kos.
+
+Patches
+---------
+kos-cdrom-ack.diff
+  + add ability to initialize cdrom with different params
+  + add arg to cdrom_read_sectors() to specify PIO or DMA xfer
+  + make realpath() just a strcpy(), was getting some weird memory 
+    corruptions and crashes caused by it in fs_open.
+
+lwip-bugfix-ack.diff
+  + fix memory corruption in pcb->snd_queuelen by multiple threads modifying it 
+    at the same time (dirty/ugly fix)
+  + disable debug, memp_sanity() was killing performace.
+  + fix possible queuelen overflow in tcp_enqueue()
+
+-ack

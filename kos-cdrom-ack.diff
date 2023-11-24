@@ -1,0 +1,177 @@
+Index: kernel/libc/koslib/realpath.c
+===================================================================
+--- kernel/libc/koslib/realpath.c	(revision 394)
++++ kernel/libc/koslib/realpath.c	(working copy)
+@@ -53,6 +53,9 @@
+ 	int serrno;
+ 	char left[PATH_MAX], next_token[PATH_MAX];
+ 
++        strcpy(resolved, path);
++        return resolved;
++
+ 	serrno = errno;
+ 	if (path[0] == '/') {
+ 		resolved[0] = '/';
+Index: kernel/arch/dreamcast/include/dc/cdrom.h
+===================================================================
+--- kernel/arch/dreamcast/include/dc/cdrom.h	(revision 394)
++++ kernel/arch/dreamcast/include/dc/cdrom.h	(working copy)
+@@ -31,6 +31,10 @@
+ #define CMD_GETSCD	34
+ #define CMD_GETSES	35
+ 
++
++#define READ_PIO	0
++#define READ_DMA	1
++
+ /* Command responses */
+ #define ERR_OK		0
+ #define ERR_NO_DISC	1
+@@ -78,13 +82,13 @@
+ int cdrom_get_status(int *status, int *disc_type);
+ 
+ /* Re-init the drive, e.g., after a disc change, etc */
+-int cdrom_reinit();
++int cdrom_reinit(int param1, int cdxa, int sector_size);
+ 
+ /* Read the table of contents */
+ int cdrom_read_toc(CDROM_TOC *toc_buffer, int session);
+ 
+ /* Read one or more sectors */
+-int cdrom_read_sectors(void *buffer, int sector, int cnt);
++int cdrom_read_sectors(int type, void *buffer, int sector, int cnt);
+ 
+ /* Locate the LBA sector of the data track */
+ uint32 cdrom_locate_data_track(CDROM_TOC *toc);
+@@ -102,7 +106,7 @@
+ int cdrom_spin_down();
+ 
+ /* Initialize */
+-int cdrom_init();
++int cdrom_init(int param1, int cdxa, int sector_size);
+ void cdrom_shutdown();
+ 
+ __END_DECLS
+Index: kernel/arch/dreamcast/fs/fs_iso9660.c
+===================================================================
+--- kernel/arch/dreamcast/fs/fs_iso9660.c	(revision 394)
++++ kernel/arch/dreamcast/fs/fs_iso9660.c	(working copy)
+@@ -243,7 +243,7 @@
+ 	if (i >= NUM_CACHE_BLOCKS) { i = 0; }
+ 	
+ 	/* Load the requested block */
+-	j = cdrom_read_sectors(cache[i]->data, sector + 150, 1);
++	j = cdrom_read_sectors(READ_PIO, cache[i]->data, sector + 150, 1);
+ 	if (j < 0) {
+ 		//dbglog(DBG_ERROR, "fs_iso9660: can't read_sectors for %d: %d\n",
+ 		//	sector+150, j);
+@@ -306,7 +306,7 @@
+ 	iso_reset();
+ 	
+ 	/* Locate the root session */
+-	if ((i = cdrom_reinit()) != 0) {
++	if ((i = cdrom_reinit(-1, -1, -1)) != 0) {
+ 		dbglog(DBG_ERROR, "fs_iso9660:init_percd: cdrom_reinit returned %d\n", i);
+ 		return -1;
+ 	}
+@@ -637,7 +637,7 @@
+ 				thissect);
+ 
+ 			// Do the read
+-			if (cdrom_read_sectors(outbuf,
++			if (cdrom_read_sectors(READ_PIO, outbuf,
+ 				fh[fd].first_extent + fh[fd].ptr/2048 + 150,
+ 				thissect) < 0)
+ 			{
+Index: kernel/arch/dreamcast/hardware/cdrom.c
+===================================================================
+--- kernel/arch/dreamcast/hardware/cdrom.c	(revision 394)
++++ kernel/arch/dreamcast/hardware/cdrom.c	(working copy)
+@@ -126,9 +126,9 @@
+ }
+ 
+ /* Re-init the drive, e.g., after a disc change, etc */
+-int cdrom_reinit() {
++int cdrom_reinit(int param1, int cdxa, int sector_size) {
+ 	int	rv = ERR_OK;
+-	int	r = -1, cdxa;
++	int	r = -1;
+ 	uint32	params[4];
+ 	int	timeout;
+ 
+@@ -159,11 +159,17 @@
+ 
+ 	/* Check disc type and set parameters */
+ 	gdc_get_drv_stat(params);
+-	cdxa = params[1] == 32;
++	if(cdxa == -1) 
++		cdxa = (params[1] == 32 ? 2048 : 1024);
++	if(param1 == -1)
++		param1 = 8192;
++	if(sector_size == -1)
++		sector_size = 2048;
++
+ 	params[0] = 0;				/* 0 = set, 1 = get */
+-	params[1] = 8192;			/* ? */
+-	params[2] = cdxa ? 2048 : 1024;		/* CD-XA mode 1/2 */
+-	params[3] = 2048;			/* sector size */
++	params[1] = param1;			/* ? */
++	params[2] = cdxa;			/* CD-XA mode 1/2 */
++	params[3] = sector_size;			/* sector size */
+ 	if (gdc_change_data_type(params) < 0) { rv = ERR_SYS; goto exit; }
+ 
+ exit:
+@@ -190,7 +196,7 @@
+ }
+ 
+ /* Read one or more sectors */
+-int cdrom_read_sectors(void *buffer, int sector, int cnt) {
++int cdrom_read_sectors(int type, void *buffer, int sector, int cnt) {
+ 	struct {
+ 		int	sec, num;
+ 		void	*buffer;
+@@ -204,8 +210,11 @@
+ 	params.num = cnt;	/* Number of sectors */
+ 	params.buffer = buffer;	/* Output buffer */
+ 	params.dunno = 0;	/* ? */
+-	rv = cdrom_exec_cmd(CMD_PIOREAD, &params);
+-	
++	if(type == READ_PIO) {
++		rv = cdrom_exec_cmd(CMD_PIOREAD, &params);
++	} else {
++		rv = cdrom_exec_cmd(CMD_DMAREAD, &params);
++	}		
+ 	mutex_unlock(mutex);
+ 	return rv;
+ }
+@@ -295,7 +304,7 @@
+ }
+ 
+ /* Initialize: assume no threading issues */
+-int cdrom_init() {
++int cdrom_init(int param1, int cdxa, int sector_size) {
+ 	uint32 p, x;
+ 	volatile uint32 *react = (uint32*)0xa05f74e4,
+ 		*bios = (uint32*)0xa0000000;
+@@ -315,7 +324,7 @@
+ 	mutex = mutex_create();
+ 
+ 	/* Do an initial initialization */
+-	cdrom_reinit();
++	cdrom_reinit(param1, cdxa, sector_size);
+ 	
+ 	return 0;
+ }
+Index: kernel/arch/dreamcast/hardware/hardware.c
+===================================================================
+--- kernel/arch/dreamcast/hardware/hardware.c	(revision 394)
++++ kernel/arch/dreamcast/hardware/hardware.c	(working copy)
+@@ -36,7 +36,7 @@
+ 	spu_dma_init();
+ 
+ 	/* Init CD-ROM.. NOTE: NO GD-ROM SUPPORT. ONLY CDs/CDRs. */
+-	cdrom_init();
++	cdrom_init(-1, -1, -1);
+ 
+ 	/* Setup maple bus */
+ 	maple_init();
