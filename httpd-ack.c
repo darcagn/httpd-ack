@@ -195,8 +195,10 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
   int sector_start, sector_end, track_size;
   int sector;
   CDROM_TOC toc;
+  CDROM_TOC iptoc;
   int attempt, rv;
   int offset, data_size;
+  char iptocbuf[2352];
   buf = nocache = NULL;
 
   printscr("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d sub:%d retry:%d ab:%d",
@@ -244,6 +246,19 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     retry = 0;
   }
 
+  if(session == 2) {
+    if(cdrom_reinit(-1,-1,-1) != ERR_OK) {
+      goto send_track_out;
+    }
+  
+    if(cdrom_read_sectors(READ_PIO, iptocbuf, 45150, 1) == ERR_OK) {
+      // verify it looks like a dreamcast disc
+      if(strncasecmp("SEGA SEGAKATANA", iptocbuf, strlen("SEGA SEGAKATANA")) == 0) {
+        printscr("using ip.bin toc");
+        memcpy(&iptoc,iptocbuf+0xFC,sizeof(CDROM_TOC));
+      }
+    }
+  }     
   if(cdrom_reinit(p1, cdxa, sector_size) != ERR_OK) {
     send_error(hs, 404, "ERROR: cdrom_reinit() failed");
     goto send_track_out;
@@ -256,7 +271,10 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
 
   // determine the start/end sector from toc
   } else {
-    if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
+
+    if(session == 2) {
+      toc = iptoc;
+    } else if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
       send_error(hs, 404, "ERROR: toc read failed");
       goto send_track_out;
     }
@@ -448,7 +466,7 @@ void send_toc(http_state_t *hs) {
   sprintf(cursor, "<tr cellpadding=2><td bgcolor=#CCCCCC>CD-ROM</td><td colspan=3 bgcolor=#CCCCCC>INFO</td></tr>\n");
   cursor += strlen(cursor);
 
-  if(cdrom_read_sectors(READ_PIO, &sector, 45150, 1) == ERR_OK) {
+  if(cdrom_read_sectors(READ_PIO, sector, 45150, 1) == ERR_OK) {
     // verify it looks like a dreamcast disc
     if(strncasecmp("SEGA SEGAKATANA", sector, strlen("SEGA SEGAKATANA")) == 0) {
 
