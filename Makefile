@@ -1,5 +1,5 @@
 # Put the filename of the output binary here
-VERSION = "20070624-gdr-test2"
+VERSION = "20070624-gdr-test3"
 TARGET = httpd-ack.elf
 
 # List all of your C files here, but change the extension to ".o"

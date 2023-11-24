@@ -582,6 +582,7 @@ send_toc_out:
 void send_gdi(http_state_t *hs) {
   CDROM_TOC toc1, toc2;
   char *output, *cursor;
+  char iptocbuf[2352];
   int output_size, track, rv;
   
   // add a cdrom_reinit?
@@ -594,10 +595,17 @@ void send_gdi(http_state_t *hs) {
     return;
   }
 
-  if(cdrom_read_toc(&toc2, 1) != ERR_OK) {
-    printscr("FATAL: Failed to read toc, session %d", 2);
-    send_error(hs, 404, "Not a dreamcast disc (2nd session)"); 
+  if(cdrom_reinit(-1,-1,-1) != ERR_OK) {
+    send_error(hs,404,"cdrom_reinit error");
     return;
+  }
+  
+  if(cdrom_read_sectors(READ_PIO, iptocbuf, 45150, 1) == ERR_OK) {
+    // verify it looks like a dreamcast disc
+    if(strncasecmp("SEGA SEGAKATANA", iptocbuf, strlen("SEGA SEGAKATANA")) == 0) {
+      printscr("using ip.bin toc");
+      memcpy(&toc2,iptocbuf+0xFC,sizeof(CDROM_TOC));
+    }
   }
 
   output = malloc(GDI_BUFFER);
