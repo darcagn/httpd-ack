@@ -112,5 +112,7 @@ lwip-bugfix-ack.diff
     at the same time (dirty/ugly fix)
   + disable debug, memp_sanity() was killing performace.
   + fix possible queuelen overflow in tcp_enqueue()
+  + work around for killing tcp socket before all data was sent, was 
+    also causing lwip stack to crash
 
 -ack

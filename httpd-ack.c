@@ -6,6 +6,7 @@
 #include <kos/mutex.h>
 #include <lwip/sockets.h>
 #include <lwip/lwip.h>
+#include <conio/conio.h>
 #include <unistd.h>
 
 extern uint8 romdisk[];
@@ -44,45 +45,6 @@ cdrom_info_t cdrom_info[] = {
   { "Manufacturer ID",   0x70, 0x7F },
 };
 
-// print junk to screen, overly inefficient
-#define LINES 17
-#define COLS 50
-static char lines[LINES][COLS+1];
-void printscr(char *fmt, ...) {
-  static mutex_t *buf_mutex = NULL;
-  char newline[1024];
-  int i;
-  va_list args;
-
-  if(buf_mutex == NULL) {
-    buf_mutex = mutex_create();
-  }
-
-  va_start(args, fmt);
-  vsprintf(newline, fmt, args);
-  va_end(args);
-
-  mutex_lock(buf_mutex);
-
-  // move lines down
-  for(i = LINES - 1;i > 0;i--)
-    memcpy(lines[i], lines[i-1], COLS + 1);
-
-  // copy in new line, truncating at COLS length
-  strncpy(lines[0], newline, COLS);   
-
-  // clear/write lines to screen
-  vid_clear(50,0,70);
-  for(i = LINES; i > 0;i--) {
-    bfont_draw_str(vram_s + (20+(i * 24))*640+20, 640, 0, lines[LINES - i]);
-  }
-  mutex_unlock(buf_mutex);
-
-  // recurse if we need to split a line
-  if(strlen(newline) > COLS)
-    printscr("%s", newline+COLS);
-}
-
 // send http response, if len > 0 include length header
 void send_ok(http_state_t *hs, const char *ct, int len) {
   char buf[512];
@@ -108,8 +70,8 @@ void send_error(http_state_t *hs, int errcode, const char *str) {
 void send_memory(http_state_t *hs, unsigned long start, unsigned long end) {
   int data_size, offset, rv;
   char tmp;
-
-  printscr("sending memory 0x%x - 0x%x, socket %d", start, end, hs->socket);
+  
+  conio_printf("sending memory 0x%x - 0x%x, socket %d\n", start, end, hs->socket);
 
   data_size = end - start + 1;
   if(data_size <= 0) {
@@ -132,8 +94,9 @@ void send_memory(http_state_t *hs, unsigned long start, unsigned long end) {
   offset = 0;
   while(data_size > 0) {
     rv = write(hs->socket, (char*)start+offset, data_size);
-    if(rv <= 0)
+    if(rv <= 0) {
         return;
+    }
 
     data_size -= rv;
     offset += rv;
@@ -150,7 +113,7 @@ void send_fsfile(http_state_t *hs, char *file) {
   file_t fd, count, offset, rv;
 
 
-  printscr("sending fsfile %s, socket %d", file, hs->socket);
+  conio_printf("sending fsfile %s, socket %d\n", file, hs->socket);
 
   fd = fs_open(file, O_RDONLY); 
   if(fd < 0) {
@@ -161,7 +124,7 @@ void send_fsfile(http_state_t *hs, char *file) {
   buf = malloc(FSFILE_BUFFER);
   if(buf == NULL) {
     send_error(hs, 404, "ERROR: malloc failure in send_fsfile()");
-    printscr("malloc failure in send_fsfile(), socket %d", hs->socket);
+    conio_printf("malloc failure in send_fsfile(), socket %d\n", hs->socket);
     return;
   }
 
@@ -195,18 +158,16 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
   int sector_start, sector_end, track_size;
   int sector;
   CDROM_TOC toc;
-  CDROM_TOC iptoc;
   int attempt, rv;
   int offset, data_size;
-  char iptocbuf[2352];
   buf = nocache = NULL;
 
-  printscr("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d sub:%d retry:%d ab:%d",
+  conio_printf("s:%d t:%d p1:%d cdxa:%d ss:%d dma:%d sr:%d sub:%d retry:%d ab:%d\n",
            session, track, p1, cdxa, sector_size, dma, sector_read, 
            sub, retry, abort);
 
   if(sector_size <= 0) {
-    printscr("WARN: invalid sector_size %d, forcing 2352", sector_size);
+    conio_printf("WARN: invalid sector_size %d, forcing 2352\n", sector_size);
     sector_size = 2352;
   }
 
@@ -215,50 +176,37 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
   }
 
   if(sector_read > MAX_SECTOR_READ) {
-    printscr("WARN: sector_read %d > MAX, forcing %d", sector_read,
+    conio_printf("WARN: sector_read %d > MAX, forcing %d\n", sector_read,
              MAX_SECTOR_READ);
     sector_read = MAX_SECTOR_READ;
   }
   
   if(sector_read <= 0) {
-    printscr("WARN: sector_read %d <= 0, forcing 1", sector_read);
+    conio_printf("WARN: sector_read %d <= 0, forcing 1\n", sector_read);
     sector_read = 1;
   }
 
   if(sub < 0 || sub > 2) {
-    printscr("WARN: invalid sub %d, forcing %d", sub, SUB_NONE);
+    conio_printf("WARN: invalid sub %d, forcing %d\n", sub, SUB_NONE);
     sub = SUB_NONE;
   }
 
   if(sub) {
     if(sector_read != 1) {
-      printscr("WARN: sub enabled, sector_read forced to 1");
+      conio_printf("WARN: sub enabled, sector_read forced to 1\n");
       sector_read = 1;
     }
     if(dma != 0) {
-      printscr("WARN: sub enabled, dma read disabled");
+      conio_printf("WARN: sub enabled, dma read disabled\n");
       dma = 0;
     }
   }
 
   if(retry < 0) {
-    printscr("WARN: retry %d < 0, forcing 0", retry);
+    conio_printf("WARN: retry %d < 0, forcing 0\n", retry);
     retry = 0;
   }
 
-  if(session == 2) {
-    if(cdrom_reinit(-1,-1,-1) != ERR_OK) {
-      goto send_track_out;
-    }
-  
-    if(cdrom_read_sectors(READ_PIO, iptocbuf, 45150, 1) == ERR_OK) {
-      // verify it looks like a dreamcast disc
-      if(strncasecmp("SEGA SEGAKATANA", iptocbuf, strlen("SEGA SEGAKATANA")) == 0) {
-        printscr("using ip.bin toc");
-        memcpy(&iptoc,iptocbuf+0xFC,sizeof(CDROM_TOC));
-      }
-    }
-  }     
   if(cdrom_reinit(p1, cdxa, sector_size) != ERR_OK) {
     send_error(hs, 404, "ERROR: cdrom_reinit() failed");
     goto send_track_out;
@@ -271,10 +219,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
 
   // determine the start/end sector from toc
   } else {
-
-    if(session == 2) {
-      toc = iptoc;
-    } else if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
+    if(cdrom_read_toc(&toc, session - 1) != ERR_OK) {
       send_error(hs, 404, "ERROR: toc read failed");
       goto send_track_out;
     }
@@ -300,7 +245,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
   buf = memalign(32, SECTOR_BUFFER);
   if(buf == NULL) {
     send_error(hs, 404, "ERROR: malloc failure in send_track()");
-    printscr("malloc failure in send_track(), socket %d", hs->socket);
+    conio_printf("malloc failure in send_track(), socket %d\n", hs->socket);
     goto send_track_out;
   }
 
@@ -324,7 +269,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     do {
 
       if(attempt != 0) 
-        printscr("READ ERROR: sector: %d, retrying", sector);
+        conio_printf("READ ERROR: sector: %d, retrying\n", sector);
 
       rv = cdrom_read_sectors(dma, nocache, sector, sector_read);
       attempt++;
@@ -332,7 +277,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     } while(rv != ERR_OK && attempt < retry);
 
     if(rv != ERR_OK) {
-        printscr("READ ERROR: sector: %d, FAILED", sector);
+        conio_printf("READ ERROR: sector: %d, FAILED\n", sector);
         if(abort)
           goto send_track_out;
     }
@@ -344,7 +289,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
 
       rv = cdrom_get_subchannel(CD_SUB_Q_CHANNEL, nocache+sector_size, 100);
       if(rv != ERR_OK) {
-        printscr("SUB ERROR: sector: %d, FAILED", sector);
+        conio_printf("SUB ERROR: sector: %d, FAILED\n", sector);
         if(abort)
           goto send_track_out;
       }
@@ -356,14 +301,14 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
     } else if(sub == SUB_READ_SECTOR) {
 
       if(cdrom_set_datatype(16, cdxa, sector_size) != ERR_OK) {
-        printscr("SUB ERROR: failed to set datatype (p=16)");
+        conio_printf("SUB ERROR: failed to set datatype (p=16)\n");
         if(abort)
           goto send_track_out;
       }
 
       rv = cdrom_read_sectors(dma, nocache+sector_size, sector, sector_read);
       if(rv != ERR_OK) {
-        printscr("SUB ERROR: sector: %d, FAILED", sector);
+        conio_printf("SUB ERROR: sector: %d, FAILED\n", sector);
         if(abort)
           goto send_track_out;
       }
@@ -374,7 +319,7 @@ void send_track(http_state_t *hs, int session, int track, int p1, int cdxa,
       
       // reset the read datatype
       if(cdrom_set_datatype(p1, cdxa, sector_size) != ERR_OK) {
-        printscr("SUB ERROR: failed to reset datatype (p=%d)", p1);
+        conio_printf("SUB ERROR: failed to reset datatype (p=%d)\n", p1);
         if(abort)
           goto send_track_out;
       }
@@ -438,16 +383,15 @@ void send_toc(http_state_t *hs) {
   int output_size, i, rv;
   int sendgdi = 0;
   CDROM_TOC toc;
-  CDROM_TOC iptoc;
   int session, track, track_size, track_type, track_start, track_end;
   int sector_size, gap;
 
-  printscr("sending TOC, socket %d", hs->socket);
+  conio_printf("sending TOC, socket %d\n", hs->socket);
 
   output = malloc(TOC_BUFFER);
   if(output == NULL) {
     send_error(hs, 404, "ERROR: malloc failure in send_toc()");
-    printscr("malloc failure in send_toc(), socket %d", hs->socket);
+    conio_printf("malloc failure in send_toc(), socket %d\n", hs->socket);
     return;
   }
 
@@ -471,8 +415,6 @@ void send_toc(http_state_t *hs) {
     if(strncasecmp("SEGA SEGAKATANA", sector, strlen("SEGA SEGAKATANA")) == 0) {
 
       sendgdi = 1;
-      memcpy(&iptoc,sector+0xFC,sizeof(CDROM_TOC));
-
       for(i = 0; i < sizeof(cdrom_info) / sizeof(cdrom_info_t);i++) {
         trim_cdrom_info(sector + cdrom_info[i].start, info, 
                         cdrom_info[i].end - cdrom_info[i].start + 1);
@@ -493,15 +435,10 @@ void send_toc(http_state_t *hs) {
 
   for(session = 0; session < 2; session++) {
     if(cdrom_read_toc(&toc, session) != ERR_OK) {
-      printscr("WARN: Failed to read toc, session %d", session + 1);
+      conio_printf("WARN: Failed to read toc, session %d\n", session + 1);
       continue;
     }
 
-    if(session == 1) {
-      toc=iptoc;
-    }
-
-    printscr("%x %x",toc.first,toc.last);
     for(track = TOC_TRACK(toc.first);track <= TOC_TRACK(toc.last); track++) {
       track_type = TOC_CTRL(toc.entry[track-1]);
       track_start = TOC_LBA(toc.entry[track-1]);
@@ -582,36 +519,28 @@ send_toc_out:
 void send_gdi(http_state_t *hs) {
   CDROM_TOC toc1, toc2;
   char *output, *cursor;
-  char iptocbuf[2352];
   int output_size, track, rv;
   
   // add a cdrom_reinit?
 
-  printscr("sending gdi file, socket %d", hs->socket);
+  conio_printf("sending gdi file, socket %d\n", hs->socket);
 
   if(cdrom_read_toc(&toc1, 0) != ERR_OK) {
-    printscr("FATAL: Failed to read toc, session %d", 1);
+    conio_printf("FATAL: Failed to read toc, session %d\n", 1);
     send_error(hs, 404, "No disc in drive? (error reading session 1 TOC)"); 
     return;
   }
 
-  if(cdrom_reinit(-1,-1,-1) != ERR_OK) {
-    send_error(hs,404,"cdrom_reinit error");
+  if(cdrom_read_toc(&toc2, 1) != ERR_OK) {
+    conio_printf("FATAL: Failed to read toc, session %d\n", 2);
+    send_error(hs, 404, "Not a dreamcast disc (2nd session)"); 
     return;
-  }
-  
-  if(cdrom_read_sectors(READ_PIO, iptocbuf, 45150, 1) == ERR_OK) {
-    // verify it looks like a dreamcast disc
-    if(strncasecmp("SEGA SEGAKATANA", iptocbuf, strlen("SEGA SEGAKATANA")) == 0) {
-      printscr("using ip.bin toc");
-      memcpy(&toc2,iptocbuf+0xFC,sizeof(CDROM_TOC));
-    }
   }
 
   output = malloc(GDI_BUFFER);
   if(output == NULL) {
-    send_error(hs, 404, "ERROR: malloc failure in send_gdi()");
-    printscr("malloc failure in send_gdi(), socket %d", hs->socket);
+    send_error(hs, 404, "ERROR: malloc failure in send_gdi()\n");
+    conio_printf("malloc failure in send_gdi(), socket %d", hs->socket);
     return;
   }
 
@@ -722,11 +651,11 @@ void client_thread(void *p) {
   int abort, retry;
   unsigned long memory_start, memory_end;
 
-  printscr("httpd: client thread started, socket %d", hs->socket);
+  conio_printf("httpd: client thread started, socket %d\n", hs->socket);
 
   buf = malloc(HEADER_BUFSIZE);
   if(buf == NULL) {
-    printscr("httpd: malloc failure in client_thread(), socket %d", 
+    conio_printf("httpd: malloc failure in client_thread(), socket %d\n", 
              hs->socket);
     goto client_thread_out;
   }  
@@ -735,7 +664,7 @@ void client_thread(void *p) {
     goto client_thread_out;
   }
   
-  printscr("httpd: client request '%s', socket %d", buf, hs->socket);
+  conio_printf("httpd: client request '%s', socket %d\n", buf, hs->socket);
 
   // deal with request
   if((sscanf(buf, "/track%d.bin?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
@@ -744,7 +673,6 @@ void client_thread(void *p) {
      (sscanf(buf, "/track%d.raw?session%d_p%d_cdxa%d_sector_size%d_gap%d_dma%d_sector_read%d_sub%d_abort%d_retry%d",
            &track, &session, &p1, &cdxa, &sector_size, &gap, &dma, 
            &sector_read, &sub, &abort, &retry) == 11)) {
-
     if(mutex_trylock(cdrom_mutex) == 0) {
       send_track(hs, session, track, p1, cdxa, sector_size, gap, dma, 
                  sector_read, sub, abort, retry);
@@ -752,13 +680,12 @@ void client_thread(void *p) {
     } else {
       send_error(hs, 404, "ERROR: track dump refused, cdrom is locked by another thread");
     }
-
   } else if(strcmp(buf, "/source.zip") == 0) {
     send_fsfile(hs, "/rd/source.zip");
   } else if(sscanf(buf, "/memory_start%lu_end%lu.bin", &memory_start, &memory_end) == 2) {
     send_memory(hs, memory_start, memory_end);
   } else if(strcmp(buf, "/disc.gdi") == 0) {
-    // not going to lock, since TOC should be cache be cdrom/dc
+    // not going to lock, since TOC should be cache'd by cdrom/dc
     send_gdi(hs);
   } else if(strcmp(buf, "/dc_bios.bin") == 0) {
     send_memory(hs, 0x0, 0x1FFFFF);
@@ -767,9 +694,13 @@ void client_thread(void *p) {
   } else if(strcmp(buf, "/syscalls.bin") == 0) {
     send_memory(hs, 0x8C000000, 0x8C007FFF);
   } else if(strcmp(buf, "/cdrom_spin_down") == 0) {
-    cdrom_spin_down();
+    if(mutex_trylock(cdrom_mutex) == 0) {
+      cdrom_spin_down();
+      mutex_unlock(cdrom_mutex);
+    } else {
+      send_error(hs, 404, "ERROR: cdrom spin down refusted, cdrom is locked by another thread");
+    }
   } else {
-
     // need to lock since it cdrom_reinit and reads a sector for disc into
     if(mutex_trylock(cdrom_mutex) == 0) {
       send_toc(hs);
@@ -781,9 +712,14 @@ void client_thread(void *p) {
   }
 
 client_thread_out:
-  printscr("httpd: closed connection, socket %d", hs->socket);
+  conio_printf("httpd: closed connection, socket %d\n", hs->socket);
   if(buf != NULL)
     free(buf);
+
+  // work around an issue within kos port of lwip
+  // tcp socket can be killed before all the data has been sent
+//  sleep(2);
+
   close(hs->socket);
   free(hs);
 
@@ -801,7 +737,7 @@ void httpd(void *arg) {
 
   listenfd = socket(AF_INET, SOCK_STREAM, 0);
   if(listenfd < 0) {
-    printscr("httpd: socket create failed");
+    conio_printf("httpd: socket create failed\n");
     return;
   }
 
@@ -811,18 +747,18 @@ void httpd(void *arg) {
   saddr.sin_port = htons(80);
 
   if(bind(listenfd, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
-    printscr("httpd: bind failed");
+    conio_printf("httpd: bind failed\n");
     close(listenfd);
     return;
   }
 
   if(listen(listenfd, 10) < 0) {
-    printscr("httpd: listen failed\n");
+    conio_printf("httpd: listen failed\n");
     close(listenfd);
     return;
   }
 
-  printscr("httpd: listening for connections on socket %d", listenfd);
+  conio_printf("httpd: listening for connections on socket %d\n", listenfd);
 
   for ( ; ; ) {
     maxfdp1 = listenfd + 1;
@@ -841,7 +777,7 @@ void httpd(void *arg) {
       hs->client_size = sizeof(hs->client);
       hs->socket = accept(listenfd, (struct sockaddr *)&hs->client,
                           &hs->client_size);
-      printscr("httpd: connect from %08lx, port %d, socket %d\n",
+      conio_printf("httpd: connect from %08lx, port %d, socket %d\n",
                 hs->client.sin_addr.s_addr, hs->client.sin_port, hs->socket);
       if(hs->socket < 0) {
         free(hs);
@@ -862,21 +798,25 @@ int main(int argc, char **argv) {
   // init cdrom with default options
   cdrom_init(-1,-1,-1);
 
-  printscr("httpd-ack v%s", VERSION);
-  printscr("Press Start to Quit");
+  pvr_init_defaults();
+  conio_init(CONIO_TTY_PVR, CONIO_INPUT_LINE);
+  conio_set_theme(CONIO_THEME_MATRIX);
+
+  conio_printf("httpd-ack v%s\n", VERSION);
+  conio_printf("Press Start to Quit\n");
 
   if(flashrom_get_ispcfg(&ispcfg) == 0) {
 
     // complain if ip is 0.0.0.0
     if(*(uint32*)ispcfg.ip == 0) {
-      printscr("ERROR: isp setting IP is 0.0.0.0");
+      conio_printf("ERROR: isp setting IP is 0.0.0.0\n");
     } else {
-      printscr("Connect to http://%d.%d.%d.%d/", ispcfg.ip[0], ispcfg.ip[1],
-               ispcfg.ip[2], ispcfg.ip[3]);
+      conio_printf("Connect to http://%d.%d.%d.%d/\n", ispcfg.ip[0], 
+                   ispcfg.ip[1], ispcfg.ip[2], ispcfg.ip[3]);
       thd_create(httpd, NULL);
     }
   } else {
-    printscr("ERROR: Unable to load isp settings from flash");
+    conio_printf("ERROR: Unable to load isp settings from flash\n");
   }
 
   for ( ; ; ) {

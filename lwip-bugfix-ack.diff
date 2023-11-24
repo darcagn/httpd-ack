@@ -124,7 +124,7 @@ Index: kos/include/lwipopts.h
 ===================================================================
 --- kos/include/lwipopts.h	(revision 394)
 +++ kos/include/lwipopts.h	(working copy)
-@@ -127,7 +127,7 @@
+@@ -127,14 +127,14 @@
  #define TCP_MSS                 1476
  
  /* TCP sender buffer space (bytes). */
@@ -133,6 +133,14 @@ Index: kos/include/lwipopts.h
  
  /* TCP sender buffer space (pbufs). This must be at least = 2 *
     TCP_SND_BUF/TCP_MSS for things to work. */
+ #define TCP_SND_QUEUELEN        2 * TCP_SND_BUF/TCP_MSS
+ 
+ /* TCP receive window. */
+-#define TCP_WND                 65535
++#define TCP_WND                 65335 
+ 
+ /* Maximum number of retransmissions of data segments. */
+ #define TCP_MAXRTX              12
 @@ -263,6 +263,7 @@
  #define DHCP_DEBUG                      DBG_FLAG_COMMON
  #define DBG_MIN_LEVEL                   DBG_LEVEL_WARNING
@@ -146,15 +154,35 @@ Index: kos/sockets.c
 ===================================================================
 --- kos/sockets.c	(revision 394)
 +++ kos/sockets.c	(working copy)
-@@ -1206,9 +1206,11 @@
+@@ -415,6 +415,17 @@
+ // This function is called by both lwip_close and the fs_close handler. It
+ // expects a socket #, not a VFS fd.
+ static int close_common(int s) {
++	int timeout = 0;
++
++	// nasty workaround for a socket being killed off before all data
++	// had been sent and also was causing lwip stack to crash.
++	// need to get unlazy and do a proper port of a newer lwip version
++	while(fds[s].send < TCP_SND_BUF && fds[s].send != -1 
++              && timeout < 1000) {
++		timeout++;
++		usleep(1000);
++	}
++
+ 	// Make sure we have access
+ 	mutex_lock(fds[s].mutex);
+ 
+@@ -1205,11 +1216,11 @@
+ 	errno = ENOSYS;
  	return -1;
  }
- 
+-
 +/*
  char * lwip_strerr(err_t err) {
  	return strerror(err);
  }
+-
 +*/
- 
  /////////////////////////////////////////////////////////////////////////////
  // Administrative details
+ 

@@ -1,5 +1,5 @@
 # Put the filename of the output binary here
-VERSION = "20070624-gdr-test3"
+VERSION = "20070720"
 TARGET = httpd-ack.elf
 
 # List all of your C files here, but change the extension to ".o"
@@ -24,7 +24,7 @@ rm-elf:
 
 $(TARGET): $(OBJS)
 	$(KOS_CC) $(KOS_CFLAGS) $(KOS_LDFLAGS) -o $(TARGET) $(KOS_START) \
-		$(OBJS) $(OBJEXTRA) -llwip4 -lkosutils $(KOS_LIBS)
+		$(OBJS) $(OBJEXTRA) -llwip4 -lkosutils -lconio $(KOS_LIBS)
 
 romdisk.img:
 	zip -9 -r romdisk/source.zip source/
