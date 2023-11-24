@@ -420,6 +420,7 @@ void send_toc(http_state_t *hs) {
   int output_size, i, rv;
   int sendgdi = 0;
   CDROM_TOC toc;
+  CDROM_TOC iptoc;
   int session, track, track_size, track_type, track_start, track_end;
   int sector_size, gap;
 
@@ -452,6 +453,8 @@ void send_toc(http_state_t *hs) {
     if(strncasecmp("SEGA SEGAKATANA", sector, strlen("SEGA SEGAKATANA")) == 0) {
 
       sendgdi = 1;
+      memcpy(&iptoc,sector+0xFC,sizeof(CDROM_TOC));
+
       for(i = 0; i < sizeof(cdrom_info) / sizeof(cdrom_info_t);i++) {
         trim_cdrom_info(sector + cdrom_info[i].start, info, 
                         cdrom_info[i].end - cdrom_info[i].start + 1);
@@ -476,6 +479,11 @@ void send_toc(http_state_t *hs) {
       continue;
     }
 
+    if(session == 1) {
+      toc=iptoc;
+    }
+
+    printscr("%x %x",toc.first,toc.last);
     for(track = TOC_TRACK(toc.first);track <= TOC_TRACK(toc.last); track++) {
       track_type = TOC_CTRL(toc.entry[track-1]);
       track_start = TOC_LBA(toc.entry[track-1]);
@@ -732,6 +740,8 @@ void client_thread(void *p) {
     send_memory(hs, 0x00200000, 0x0021FFFF);
   } else if(strcmp(buf, "/syscalls.bin") == 0) {
     send_memory(hs, 0x8C000000, 0x8C007FFF);
+  } else if(strcmp(buf, "/cdrom_spin_down") == 0) {
+    cdrom_spin_down();
   } else {
 
     // need to lock since it cdrom_reinit and reads a sector for disc into
